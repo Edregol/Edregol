@@ -1,0 +1,22 @@
+# Default deny in every namespace; each component opts into exactly the
+# traffic it needs (see the per-component egress policies).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-all, namespace: agents}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-all, namespace: agent-credentials}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-all, namespace: llm-gateway}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

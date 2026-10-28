@@ -1,0 +1,97 @@
+# Kyverno >= 1.13. Start with failureAction: Audit, check `kubectl get policyreport -A`,
+# then switch to Enforce.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: agents-require-digest
+spec:
+  background: true
+  rules:
+    - name: images-pinned-by-digest
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [agents, agent-credentials, llm-gateway]
+      validate:
+        failureAction: Audit
+        message: "Images must be pinned by @sha256 digest (no mutable tags)."
+        pattern:
+          spec:
+            =(initContainers):
+              - image: "*@sha256:*"
+            containers:
+              - image: "*@sha256:*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: agents-verify-signatures
+spec:
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: own-images-signed-by-ci
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [agents, agent-credentials]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/edregol/claude-agent*"
+            - "ghcr.io/edregol/git-token-minter*"
+          failureAction: Audit
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - entries:
+                - keyless:
+                    # Only images signed by this repo's build workflow on main.
+                    subject: "https://github.com/Edregol/Edregol/.github/workflows/build-claude-agent.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: agents-allowed-registries
+spec:
+  background: true
+  rules:
+    - name: only-trusted-registries
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [agents, agent-credentials, llm-gateway]
+      validate:
+        failureAction: Audit
+        message: "Only images from ghcr.io/edregol or the internal mirror are allowed."
+        pattern:
+          spec:
+            =(initContainers):
+              - image: "ghcr.io/edregol/* | registry.example.internal/mirror/*"
+            containers:
+              - image: "ghcr.io/edregol/* | registry.example.internal/mirror/*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: agents-no-sa-token
+spec:
+  background: true
+  rules:
+    - name: no-automounted-token
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [agents, llm-gateway]
+      validate:
+        failureAction: Audit
+        message: "Agent and gateway pods must not mount a ServiceAccount token."
+        pattern:
+          spec:
+            automountServiceAccountToken: false

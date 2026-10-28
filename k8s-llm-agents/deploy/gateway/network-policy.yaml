@@ -1,0 +1,28 @@
+# Ingress: only from agent pods. Egress: only to the model providers.
+# Anything else (e.g. a stealer phoning home) is dropped and visible in Hubble.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: litellm
+  namespace: llm-gateway
+spec:
+  endpointSelector:
+    matchLabels: {app: litellm}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: agents
+      toPorts: [{ports: [{port: "4000", protocol: TCP}]}]
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: ANY}]
+          rules:
+            dns: [{matchPattern: "*"}]
+    - toFQDNs:
+        - matchName: generativelanguage.googleapis.com
+        - matchName: api.anthropic.com
+      toPorts: [{ports: [{port: "443", protocol: TCP}]}]

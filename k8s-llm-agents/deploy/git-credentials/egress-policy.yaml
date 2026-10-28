@@ -1,0 +1,21 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: git-token-minter-egress
+  namespace: agent-credentials
+spec:
+  endpointSelector:
+    matchLabels: {app: git-token-minter}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: ANY}]
+          rules:
+            dns: [{matchPattern: "*"}]
+    - toFQDNs: [{matchName: api.github.com}]
+      toPorts: [{ports: [{port: "443", protocol: TCP}]}]
+    - toEntities: [kube-apiserver]
+      toPorts: [{ports: [{port: "443", protocol: TCP}, {port: "6443", protocol: TCP}]}]

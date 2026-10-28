@@ -1,0 +1,97 @@
+# OPTIONAL gateway for API-key traffic only (Gemini API key, Anthropic Console
+# key for CI agents, local models). Claude Code pods using a subscription +
+# Remote Control must NOT point at this (Remote Control is disabled behind a
+# gateway). Virtual keys/budgets need Postgres (e.g. CloudNativePG) — add
+# DATABASE_URL when you want them.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm
+  namespace: llm-gateway
+automountServiceAccountToken: false   # the March 2026 stealer went for k8s secrets
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: llm-gateway
+data:
+  config.yaml: |
+    model_list:
+      - model_name: gemini-pro
+        litellm_params:
+          model: gemini/gemini-2.5-pro
+          api_key: os.environ/GEMINI_API_KEY
+      - model_name: claude-sonnet
+        litellm_params:
+          model: anthropic/claude-sonnet-5-5
+          api_key: os.environ/ANTHROPIC_API_KEY
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+    litellm_settings:
+      drop_params: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: llm-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: litellm}
+  template:
+    metadata:
+      labels: {app: litellm}
+    spec:
+      serviceAccountName: litellm
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: litellm
+          # Never `pip install litellm` at runtime. Mirror the upstream
+          # non-root image into your registry after scanning, let it soak
+          # (e.g. 7 days), then pin it here by digest.
+          image: litellm
+          args: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
+          ports: [{name: http, containerPort: 4000}]
+          env:
+            - {name: LITELLM_MASTER_KEY, valueFrom: {secretKeyRef: {name: litellm, key: master-key}}}
+            - {name: GEMINI_API_KEY, valueFrom: {secretKeyRef: {name: litellm, key: gemini-api-key, optional: true}}}
+            - {name: ANTHROPIC_API_KEY, valueFrom: {secretKeyRef: {name: litellm, key: anthropic-api-key, optional: true}}}
+            - {name: HOME, value: /tmp}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # If startup fails on a write, add an emptyDir for that exact path
+            # rather than turning this off.
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            httpGet: {path: /health/readiness, port: http}
+          livenessProbe:
+            httpGet: {path: /health/liveliness, port: http}
+          volumeMounts:
+            - {name: config, mountPath: /etc/litellm, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 2Gi}
+      volumes:
+        - name: config
+          configMap: {name: litellm-config}
+        - name: tmp
+          emptyDir: {sizeLimit: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: llm-gateway
+spec:
+  selector: {app: litellm}
+  ports: [{name: http, port: 4000, targetPort: http}]

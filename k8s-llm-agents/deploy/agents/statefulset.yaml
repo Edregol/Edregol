@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-agent
+  namespace: agents
+# The agent never talks to the Kubernetes API, so it gets no token at all.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-agent
+  namespace: agents
+data:
+  # Repo cloned into the workspace on first start (owner/name on github.com).
+  GIT_REPO: "Edregol/Edregol"
+  RC_CAPACITY: "4"
+  # Usage/cost metrics + events to your OpenTelemetry collector.
+  # Prompts are NOT exported unless OTEL_LOG_USER_PROMPTS=1.
+  CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+  OTEL_METRICS_EXPORTER: "otlp"
+  OTEL_LOGS_EXPORTER: "otlp"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc:4317"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: claude-agent
+  namespace: agents
+spec:
+  serviceName: claude-agent
+  # One replica = one Remote Control server with up to RC_CAPACITY sessions.
+  # Remember: all replicas share ONE subscription's usage limit.
+  replicas: 1
+  selector:
+    matchLabels: {app: claude-agent}
+  template:
+    metadata:
+      labels: {app: claude-agent}
+    spec:
+      serviceAccountName: claude-agent
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Strongly recommended: a sandboxed runtime, so a kernel exploit from
+      # agent-executed code doesn't reach the node. Requires gVisor or Kata
+      # installed with a matching RuntimeClass.
+      # runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: git-clone
+          image: claude-agent   # replaced by kustomize with the pinned, signed digest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              dest=/home/agent/work/repo
+              if [ ! -d "$dest/.git" ]; then
+                git -c credential.helper=/opt/agent/git-credential-file.sh \
+                  clone --filter=blob:none "https://github.com/${GIT_REPO}.git" "$dest"
+              else
+                git -C "$dest" -c credential.helper=/opt/agent/git-credential-file.sh fetch --prune origin
+              fi
+          envFrom: [{configMapRef: {name: claude-agent}}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: home, mountPath: /home/agent}
+            - {name: tmp, mountPath: /tmp}
+            - {name: git-token, mountPath: /var/run/git-token, readOnly: true}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 1Gi}
+      containers:
+        - name: claude
+          image: claude-agent
+          envFrom: [{configMapRef: {name: claude-agent}}]
+          env:
+            - name: AGENT_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.namespace.name=agents,service.name=claude-agent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: home, mountPath: /home/agent}
+            - {name: tmp, mountPath: /tmp}
+            - {name: git-token, mountPath: /var/run/git-token, readOnly: true}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 2Gi}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 2Gi}
+        - name: git-token
+          secret:
+            secretName: git-token
+            defaultMode: 0440
+            optional: true
+  volumeClaimTemplates:
+    - metadata: {name: home}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 20Gi}}
+        # Pick an encrypted-at-rest storage class: this volume holds your
+        # claude.ai login and the checked-out code.
+        # storageClassName: encrypted-ssd

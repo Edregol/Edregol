@@ -1,0 +1,92 @@
+# Mints short-lived, repo-scoped GitHub App installation tokens for the agents.
+# Prereq (once):
+#   kubectl -n agent-credentials create secret generic github-app \
+#     --from-literal=app-id=... --from-literal=installation-id=... \
+#     --from-file=private-key.pem=./app.private-key.pem
+# First token before the agents start:
+#   kubectl -n agent-credentials create job --from=cronjob/git-token-minter mint-now
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: git-token-minter
+  namespace: agent-credentials
+---
+# Lives in `agents`, but may only touch the one Secret, by name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: git-token-writer
+  namespace: agents
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [git-token]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: git-token-writer
+  namespace: agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: git-token-writer
+subjects:
+  - kind: ServiceAccount
+    name: git-token-minter
+    namespace: agent-credentials
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-token-minter
+  namespace: agent-credentials
+data:
+  # Repo names (no owner) the token is scoped to. Keep this list short.
+  REPOS: "Edregol"
+  TARGET_NAMESPACE: agents
+  TARGET_SECRET: git-token
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: git-token-minter
+  namespace: agent-credentials
+spec:
+  schedule: "*/30 * * * *"   # tokens live 60 min; refresh at half-life
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels: {app: git-token-minter}
+        spec:
+          serviceAccountName: git-token-minter
+          restartPolicy: Never
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: mint
+              image: git-token-minter
+              envFrom: [{configMapRef: {name: git-token-minter}}]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              volumeMounts:
+                - {name: github-app, mountPath: /var/run/github-app, readOnly: true}
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {memory: 64Mi}
+          volumes:
+            - name: github-app
+              secret: {secretName: github-app, defaultMode: 0400}

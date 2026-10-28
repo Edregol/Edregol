@@ -1,0 +1,16 @@
+# Bumps SHA-pinned actions and digest-pinned base images via reviewable PRs.
+# A cooldown keeps freshly published (possibly malicious) releases out until
+# the ecosystem has had time to notice — both bad LiteLLM versions were
+# pulled within hours.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}
+  - package-ecosystem: docker
+    directories:
+      - /k8s-llm-agents/images/claude-agent
+      - /k8s-llm-agents/images/git-token-minter
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}

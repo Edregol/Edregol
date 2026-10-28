@@ -1,0 +1,43 @@
+# Egress allowlist for the agent pods (needs Cilium with DNS proxy / L7 enabled).
+# Everything not listed is dropped and shows up in Hubble — a cheap
+# exfiltration alarm. Hosts per https://code.claude.com/docs/en/network-config
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: claude-agent-egress
+  namespace: agents
+spec:
+  endpointSelector:
+    matchLabels: {app: claude-agent}
+  egress:
+    # DNS, inspected by Cilium so toFQDNs works.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: ANY}]
+          rules:
+            dns: [{matchPattern: "*"}]
+    - toFQDNs:
+        # Claude Code core: API, auth, token refresh, Remote Control
+        - matchName: api.anthropic.com
+        - matchName: claude.ai
+        - matchName: claude.com
+        - matchName: platform.claude.com
+        # Git over HTTPS (clone/push). API access is needed for `gh`-style PR creation.
+        - matchName: github.com
+        - matchName: api.github.com
+        - matchName: codeload.github.com
+        # Add package registries only if the agent must install deps, ideally
+        # your own mirror/proxy (Artifactory, Nexus, ...), not the public ones:
+        # - matchName: npm-mirror.internal.example
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+    # OpenTelemetry collector
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: otel-collector
+      toPorts:
+        - ports: [{port: "4317", protocol: TCP}]

@@ -1,0 +1,93 @@
+# Builds, scans, SBOMs and keyless-signs the agent images.
+# Supply-chain rules for this workflow itself:
+#  - every action pinned to a full commit SHA (tags can be moved — that is how
+#    the Trivy action compromise reached LiteLLM's CI in March 2026)
+#  - minimal token permissions; no long-lived registry or signing secrets
+#  - Claude Code version comes from a reviewed file, never "latest"
+name: build-claude-agent
+
+on:
+  push:
+    branches: [main]
+    paths: ["k8s-llm-agents/images/**", ".github/workflows/build-claude-agent.yml"]
+  pull_request:
+    paths: ["k8s-llm-agents/images/**", ".github/workflows/build-claude-agent.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write      # push to ghcr.io
+      id-token: write      # keyless cosign signing via GitHub OIDC
+    strategy:
+      matrix:
+        image: [claude-agent, git-token-minter]
+    env:
+      IMAGE: ghcr.io/edregol/${{ matrix.image }}
+      CONTEXT: k8s-llm-agents/images/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Read pinned Claude Code version
+        id: ver
+        run: |
+          v="$(cat k8s-llm-agents/images/claude-agent/CLAUDE_VERSION)"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad version '$v'"; exit 1; }
+          echo "claude=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push on main)
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ env.CONTEXT }}
+          platforms: linux/amd64,linux/arm64
+          build-args: CLAUDE_VERSION=${{ steps.ver.outputs.claude }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+
+      - name: SBOM (SPDX)
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@da167eac915b4e86f08b264dbdbc867b61be6f0c # v0.20.5
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Vulnerability scan (fail on critical)
+        if: github.event_name != 'pull_request'
+        uses: anchore/scan-action@1638637db639e0ade3258b51db49a9a137574c3e # v6.5.1
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          severity-cutoff: critical
+          fail-build: true
+
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        if: github.event_name != 'pull_request'
+
+      - name: Sign image + attach SBOM attestation (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "$REF"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$REF"
+          echo "### ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin in kustomization: \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"

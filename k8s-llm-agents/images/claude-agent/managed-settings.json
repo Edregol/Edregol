@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Read(//var/run/secrets/**)",
+      "Read(//var/run/git-token/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.claude.json)",
+      "Read(//proc/**)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/id_rsa*)",
+      "Read(./**/id_ed25519*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git config --global:*)",
+      "Bash(kubectl:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)"
+    ]
+  },
+  "allowManagedHooksOnly": true,
+  "allowManagedPermissionRulesOnly": true,
+  "enableAllProjectMcpServers": false,
+  "disableClaudeAiConnectors": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "/opt/agent/audit-hook.sh pre" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "/opt/agent/audit-hook.sh post" }]
+      }
+    ]
+  },
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "DISABLE_UPDATES": "1",
+    "CLAUDE_CODE_DISABLE_ARTIFACT": "1"
+  }
+}

@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - statefulset.yaml
+  - egress-policy.yaml
+  - rbac.yaml
+images:
+  # Set to the digest your CI printed / signed. Kyverno rejects anything else.
+  - name: claude-agent
+    newName: ghcr.io/edregol/claude-agent
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
